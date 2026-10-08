@@ -3889,7 +3889,42 @@ async fn sendblue_phone_pairing_and_text_reply_impl() {
     assert_eq!(inbound.captured_network_requests_for_test().len(), before);
     assert_eq!(ingress.post(route, &body, headers()).await, StatusCode::OK);
     ingress.drain().await;
-    assert_delivered_attempt(services, &scope).await;
+    // The fixture provider only accepted/queued the message. Persist uncertainty,
+    // never Delivered, and do not leave an automatic replayable attempt.
+    let (outbound_store, _, _, _, _) = services
+        .outbound_delivery_stores_for_test()
+        .expect("outbound stores");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let attempts = outbound_store
+            .list_delivery_attempts(scope.clone())
+            .await
+            .expect("attempts");
+        assert!(
+            attempts
+                .iter()
+                .all(|attempt| attempt.status != OutboundDeliveryStatus::Delivered)
+        );
+        if attempts
+            .iter()
+            .any(|attempt| attempt.status == OutboundDeliveryStatus::Unknown)
+            && attempts.iter().all(|attempt| {
+                !matches!(
+                    attempt.status,
+                    OutboundDeliveryStatus::Prepared
+                        | OutboundDeliveryStatus::Sending
+                        | OutboundDeliveryStatus::Pending
+                )
+            })
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "queued reply must settle Unknown"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let requests = inbound.captured_network_requests_for_test();

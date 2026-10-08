@@ -4,10 +4,12 @@ mod preference_targets;
 mod reply;
 pub use preference_targets::SendbluePreferenceTargetCodec;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use ironclaw_extension_contracts::auth_prompt::render_channel_auth_prompt;
 use ironclaw_extension_contracts::channel_adapter::{
-    ChannelDelivery, ChannelError, ChannelIngress, DeliveryReport, InboundOutcome,
+    ChannelDelivery, ChannelError, ChannelIngress, ChannelSurfaces, DeliveryReport, InboundOutcome,
     NormalizedInboundMessage, OutboundEnvelope, OutboundPart, PartDeliveryOutcome,
     ProductTriggerReason, VerifiedInbound,
 };
@@ -22,6 +24,15 @@ use serde::Deserialize;
 
 #[derive(Debug, Default)]
 pub struct SendblueChannelAdapter;
+
+/// The package-owned surfaces shared by native activation and host assembly.
+pub fn sendblue_surfaces() -> ChannelSurfaces {
+    let adapter = Arc::new(SendblueChannelAdapter);
+    ChannelSurfaces::default()
+        .with_ingress(adapter.clone())
+        .with_reply(adapter.clone())
+        .with_delivery(adapter)
+}
 
 #[derive(Deserialize)]
 struct Webhook {
@@ -264,13 +275,23 @@ async fn send_text(
         data.get("message_handle")
             .and_then(serde_json::Value::as_str),
     ) {
-        (Some("QUEUED" | "SENT" | "DELIVERED" | "READ"), Some(handle))
+        (Some("SENT" | "DELIVERED" | "READ"), Some(handle))
             if !handle.is_empty()
                 && handle.len() <= 256
                 && !handle.chars().any(char::is_control) =>
         {
             Ok(PartDeliveryOutcome::Sent {
                 vendor_message_ref: Some(handle.into()),
+            })
+        }
+        (Some("QUEUED"), Some(handle))
+            if !handle.is_empty()
+                && handle.len() <= 256
+                && !handle.chars().any(char::is_control) =>
+        {
+            Ok(PartDeliveryOutcome::Ambiguous {
+                reason: "Sendblue accepted and queued the message; handset delivery is unconfirmed"
+                    .into(),
             })
         }
         _ => Ok(PartDeliveryOutcome::Ambiguous {

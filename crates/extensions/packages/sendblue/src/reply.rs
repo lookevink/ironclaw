@@ -33,15 +33,38 @@ impl ReplySink for SendblueChannelAdapter {
             ));
         }
         if let Some(checkpoint) = request.checkpoint {
-            let prior = (checkpoint.version() == 1)
-                .then(|| serde_json::from_str::<Checkpoint>(checkpoint.payload()))
-                .and_then(Result::ok);
+            let (prior, invalid_reason) = match checkpoint.version() {
+                1 => match serde_json::from_str::<Checkpoint>(checkpoint.payload()) {
+                    Ok(prior) => (Some(prior), None),
+                    Err(error) => {
+                        // serde's Display may echo a value from the payload. Retain
+                        // structured failure diagnostics without private message text.
+                        tracing::debug!(category = ?error.classify(), line = error.line(), column = error.column(),
+                            "Malformed Sendblue reply checkpoint");
+                        (
+                            None,
+                            Some(
+                                "Sendblue reply checkpoint is malformed; inspect provider history before retrying",
+                            ),
+                        )
+                    }
+                },
+                version => {
+                    tracing::debug!(version, "Unsupported Sendblue reply checkpoint version");
+                    (
+                        None,
+                        Some(
+                            "Sendblue reply checkpoint version is unsupported; inspect provider history before retrying",
+                        ),
+                    )
+                }
+            };
             let outcome = if prior.as_ref().is_some_and(|prior| prior.applied) {
                 ReplySinkOutcome::Applied
             } else {
                 ReplySinkOutcome::Permanent {
                     reason: ReplyOutcomeReason::new(
-                        "An earlier Sendblue attempt may have sent messages; inspect provider history before retrying",
+                        invalid_reason.unwrap_or("An earlier Sendblue attempt may have sent messages; inspect provider history before retrying"),
                     ),
                 }
             };

@@ -1970,13 +1970,9 @@ impl ironclaw_extension_host::ExtensionEntrypoint for SendblueFixtureEntrypoint 
     }
 }
 fn sendblue_channel_extension_binding() -> ironclaw_composition::ChannelExtensionBinding {
-    let adapter = Arc::new(ironclaw_sendblue_extension::SendblueChannelAdapter);
     ironclaw_composition::ChannelExtensionBinding {
         extension_id: ironclaw_host_api::ids::ExtensionId::from_trusted("sendblue".into()),
-        surfaces: ironclaw_extension_contracts::channel_adapter::ChannelSurfaces::default()
-            .with_ingress(adapter.clone())
-            .with_reply(adapter.clone())
-            .with_delivery(adapter),
+        surfaces: ironclaw_sendblue_extension::sendblue_surfaces(),
         preference_target_codec: Some(Arc::new(
             ironclaw_sendblue_extension::SendbluePreferenceTargetCodec,
         )),

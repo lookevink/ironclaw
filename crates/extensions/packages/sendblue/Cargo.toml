@@ -15,7 +15,9 @@ ironclaw_extension_contracts = { path = "../../../contracts/ironclaw_extension_c
 ironclaw_host_api = { path = "../../../contracts/ironclaw_host_api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
 
 [dev-dependencies]
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
 ironclaw_extension_contracts = { path = "../../../contracts/ironclaw_extension_contracts", features = ["test-support"] }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }

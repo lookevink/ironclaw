@@ -51,13 +51,7 @@ pub(crate) fn bundled_channel_extensions(
     let bindings = vec![
         ChannelExtensionBinding {
             extension_id: ExtensionId::from_trusted("sendblue".to_string()),
-            surfaces: {
-                let adapter = Arc::new(ironclaw_sendblue_extension::SendblueChannelAdapter);
-                ChannelSurfaces::default()
-                    .with_ingress(adapter.clone())
-                    .with_reply(adapter.clone())
-                    .with_delivery(adapter)
-            },
+            surfaces: ironclaw_sendblue_extension::sendblue_surfaces(),
             preference_target_codec: Some(Arc::new(
                 ironclaw_sendblue_extension::SendbluePreferenceTargetCodec,
             )),
@@ -217,12 +211,8 @@ impl NativeExtensionFactory for SendblueExtensionFactory {
 struct SendblueExtensionEntrypoint;
 impl ExtensionEntrypoint for SendblueExtensionEntrypoint {
     fn bind(&self, _ctx: BindContext) -> Result<ExtensionBindings, BindError> {
-        let adapter = Arc::new(ironclaw_sendblue_extension::SendblueChannelAdapter);
         Ok(ExtensionBindings {
-            channel: ChannelSurfaces::default()
-                .with_ingress(adapter.clone())
-                .with_reply(adapter.clone())
-                .with_delivery(adapter),
+            channel: ironclaw_sendblue_extension::sendblue_surfaces(),
             ..ExtensionBindings::default()
         })
     }

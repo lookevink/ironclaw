@@ -78,6 +78,10 @@ destinations. Sendblue selects iMessage or SMS according to the recipient.
 - A 401 callback means the registered and configured webhook secrets differ.
   Ignored callbacks can indicate the wrong assigned line, an unallowed sender,
   a group, or an outbound/status event.
+- `QUEUED` is recorded as uncertain acceptance, never confirmed delivery. It
+  stops subsequent chunks and blocks automatic replay; inspect provider history
+  before retrying or sending the remainder. `SENT`, `DELIVERED`, and `READ` retain
+  provider delivery evidence.
 - A message accepted by Sendblue can still fail downstream; consult provider
   status for carrier issues. An HTTP 200 with `ERROR` is treated as a rejection.
 - Approval/authentication notices are rendered as text; follow their IronClaw

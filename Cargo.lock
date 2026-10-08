@@ -5171,6 +5171,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]

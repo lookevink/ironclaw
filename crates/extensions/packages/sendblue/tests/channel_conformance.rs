@@ -11,9 +11,8 @@ use ironclaw_sendblue_extension::SendblueChannelAdapter;
 
 #[tokio::test]
 async fn sendblue_satisfies_channel_conformance() {
-    let adapter = Arc::new(SendblueChannelAdapter);
     run_channel_adapter_conformance(ChannelAdapterConformance {
-        surfaces: ChannelSurfaces::default().with_ingress(adapter.clone()).with_reply(adapter.clone()).with_delivery(adapter),
+        surfaces: ironclaw_sendblue_extension::sendblue_surfaces(),
         reply_transport: Some(ReplyTransport::Message),
         extension_id: "sendblue".into(), installation_id: "fixture".into(),
         message_inbound: Some(ConformanceInbound {
@@ -27,7 +26,7 @@ async fn sendblue_satisfies_channel_conformance() {
             registrations: Vec::new(), visibility: OutboundVisibility::Public,
         },
         vendor_responses: Arc::new(|_| RestrictedEgressResponse {
-            status: 200, body: br#"{"message_handle":"fixture-out","status":"QUEUED"}"#.to_vec(), retry_after: None,
+            status: 200, body: br#"{"message_handle":"fixture-out","status":"SENT"}"#.to_vec(), retry_after: None,
         }),
         config: vec![("sendblue_from_number".into(), "+15555550100".into()), ("sendblue_allow_from".into(), "+15555550101".into())],
     }).await;
@@ -57,7 +56,7 @@ async fn text_chunks_preserve_unicode_and_no_raw_credentials_reach_egress() {
     use ironclaw_extension_contracts::test_support::conformance::ScriptedVendorServer;
     let server = ScriptedVendorServer::new(Arc::new(|_| RestrictedEgressResponse {
         status: 200,
-        body: br#"{"status":"QUEUED","message_handle":"out-1"}"#.to_vec(),
+        body: br#"{"status":"SENT","message_handle":"out-1"}"#.to_vec(),
         retry_after: None,
     }));
     let text = format!("{}🦀tail", "a".repeat(1999));
@@ -179,25 +178,44 @@ async fn inbound_admission_filters_line_sender_echo_receipt_and_group_and_never_
 async fn ambiguous_partial_reply_checkpoint_prevents_replay() {
     use ironclaw_extension_contracts::reply::*;
     use ironclaw_extension_contracts::test_support::conformance::ScriptedVendorServer;
-    use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
-    use ironclaw_host_api::turn::{TurnActor, TurnRunId, TurnScope};
     use std::sync::atomic::{AtomicUsize, Ordering};
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
     let server = ScriptedVendorServer::new(Arc::new(move |_| RestrictedEgressResponse {
         status: 200,
         body: if count.fetch_add(1, Ordering::SeqCst) == 0 {
-            br#"{"status":"QUEUED","message_handle":"accepted-part"}"#.to_vec()
+            br#"{"status":"SENT","message_handle":"accepted-part"}"#.to_vec()
         } else {
             b"broken response".to_vec()
         },
         retry_after: None,
     }));
+    let mut request = reply_request(&"x".repeat(4001));
+    let report = SendblueChannelAdapter
+        .reconcile(request.clone(), &server)
+        .await
+        .unwrap();
+    assert!(matches!(report.outcome, ReplySinkOutcome::Ambiguous { .. }));
+    assert_eq!(report.evidence.provider_refs.len(), 1);
+    request.checkpoint = report.checkpoint;
+    let replay = SendblueChannelAdapter
+        .reconcile(request, &server)
+        .await
+        .unwrap();
+    assert!(matches!(replay.outcome, ReplySinkOutcome::Permanent { .. }));
+    assert_eq!(replay.evidence.provider_refs.len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+fn reply_request(text: &str) -> ironclaw_extension_contracts::reply::ReplyReconcileRequest {
+    use ironclaw_extension_contracts::reply::*;
+    use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
+    use ironclaw_host_api::turn::{TurnActor, TurnRunId, TurnScope};
     let user = UserId::new("fixture-user").unwrap();
     let mut document = ReplyDocument::default();
-    document.finalize_answer(ReplyAnswerText::new("x".repeat(4001)).unwrap(), Vec::new());
+    document.finalize_answer(ReplyAnswerText::new(text.to_string()).unwrap(), Vec::new());
     document.complete();
-    let mut request = ReplyReconcileRequest {
+    ReplyReconcileRequest {
         revision: ReplyRevision {
             revision: 1,
             document,
@@ -221,19 +239,70 @@ async fn ambiguous_partial_reply_checkpoint_prevents_replay() {
         checkpoint: None,
         extension_generation: 1,
         materialized_attachments: Vec::new(),
-    };
+    }
+}
+
+#[tokio::test]
+async fn queued_reply_is_uncertain_and_checkpoint_prevents_replay() {
+    use ironclaw_extension_contracts::reply::*;
+    use ironclaw_extension_contracts::test_support::conformance::ScriptedVendorServer;
+    let server = ScriptedVendorServer::new(Arc::new(|_| RestrictedEgressResponse {
+        status: 200,
+        body: br#"{"status":"QUEUED","message_handle":"accepted"}"#.to_vec(),
+        retry_after: None,
+    }));
+    let mut request = reply_request(&"x".repeat(4001));
     let report = SendblueChannelAdapter
         .reconcile(request.clone(), &server)
         .await
         .unwrap();
     assert!(matches!(report.outcome, ReplySinkOutcome::Ambiguous { .. }));
-    assert_eq!(report.evidence.provider_refs.len(), 1);
+    assert!(report.evidence.provider_refs.is_empty());
+    assert_eq!(server.requests().len(), 1);
     request.checkpoint = report.checkpoint;
     let replay = SendblueChannelAdapter
         .reconcile(request, &server)
         .await
         .unwrap();
     assert!(matches!(replay.outcome, ReplySinkOutcome::Permanent { .. }));
-    assert_eq!(replay.evidence.provider_refs.len(), 1);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn malformed_and_unsupported_checkpoints_fail_closed_with_distinct_reasons() {
+    use ironclaw_extension_contracts::reply::*;
+    use ironclaw_extension_contracts::test_support::conformance::ScriptedVendorServer;
+    let server = ScriptedVendorServer::new(Arc::new(|_| {
+        panic!("checkpoint must block provider access")
+    }));
+    for (version, payload, expected) in [
+        (1, "{private-payload", "malformed"),
+        (
+            1,
+            r#"{"applied":"private-payload","evidence":{}}"#,
+            "malformed",
+        ),
+        (2, "{private-payload", "unsupported"),
+    ] {
+        let mut request = reply_request("hello");
+        request.checkpoint = Some(ReplySinkCheckpoint::new(version, payload).unwrap());
+        let report = SendblueChannelAdapter
+            .reconcile(request, &server)
+            .await
+            .unwrap();
+        let ReplySinkOutcome::Permanent { reason } = report.outcome else {
+            panic!("must reject checkpoint")
+        };
+        assert!(reason.as_str().contains(expected));
+        assert!(!reason.as_str().contains("private-payload"));
+        assert_eq!(report.checkpoint.unwrap().payload(), payload);
+        assert!(report.evidence.provider_refs.is_empty());
+    }
+    assert!(server.requests().is_empty());
+    assert!(logs_contain("Malformed Sendblue reply checkpoint"));
+    assert!(logs_contain(
+        "Unsupported Sendblue reply checkpoint version"
+    ));
+    assert!(!logs_contain("private-payload"));
 }
